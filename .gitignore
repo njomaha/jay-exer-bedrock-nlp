@@ -1,0 +1,50 @@
+# ── Secrets & credentials ─────────────────────────────
+.env
+*.env
+.env.*
+trust.json
+bedrock-inline-policy.json
+
+# ── Python venv ────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Python cache ───────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Jupyter ────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── AWS credentials (extra safety net) ────────────────
+credentials
+.aws/credentials
+.aws/config
+
+# ── Docs folder (may contain sensitive PDFs) ──────────
+docs/
+!docs/.gitkeep
+
+# ── OS files ───────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Logs ───────────────────────────────────────────────
+*.log
+logs/
+
+# ── Streamlit ──────────────────────────────────────────
+.streamlit/secrets.toml
