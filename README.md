@@ -1,23 +1,85 @@
 # jay-exer Bedrock NLP Intelligence Platform
 
-AWS Bedrock · LlamaIndex ReActAgent · Aurora pgvector · Databricks jay-exer · Streamlit + Plotly
+> **Ask plain-English questions. Get grounded answers from your lakehouse and documents.**
 
-> **Folder location:** `C:\Users\nj_ra\.aws\jay-exer-bedrock-nlp`
-> Sits alongside your other AWS exercises under `.aws\`:
-> ```
-> C:\Users\nj_ra\.aws\
-> ├── bedrock-rag\              ← your existing S3 Vectors RAG project
-> └── jay-exer-bedrock-nlp\    ← this project
-> ```
+A production-grade agentic RAG system built on AWS Bedrock that routes natural language questions across two retrieval paths — structured SQL queries against a Unity Catalog lakehouse and semantic search over unstructured PDF documents — through a single conversational Streamlit UI with auto-generated Plotly charts.
+
+![Architecture](https://img.shields.io/badge/AWS-Bedrock-orange?logo=amazonaws)
+![LlamaIndex](https://img.shields.io/badge/LlamaIndex-ReActAgent-blue)
+![Python](https://img.shields.io/badge/Python-3.11+-green?logo=python)
+![Streamlit](https://img.shields.io/badge/UI-Streamlit-red?logo=streamlit)
 
 ---
 
-## What This Does
+## What It Does
 
-- Ask questions in plain English about your jay-exer Databricks tables
-- Agent searches Unity Catalog metadata → generates SQL → runs it → charts results
-- Also searches unstructured S3 docs (PDFs, reports, JSON) via hybrid RAG
-- Built on AWS Bedrock (Titan Embed v2 + Claude Sonnet) — no external vector DB
+Ask "Which territory had the highest revenue last quarter?" and the agent retrieves the answer from an ingested shareholder letter PDF. Ask "What is the average customer balance by region?" and it finds the right table in the lakehouse catalog, checks the real column values, generates SQL, and returns a bar chart — all from the same chat input.
+
+The agent **never guesses table or column names**. Every answer is grounded in retrieved metadata or document content, not LLM training data.
+
+---
+
+## Architecture
+
+```
+Natural Language Question
+        │
+        ▼
+┌─────────────────────────────────────────────────┐
+│           LlamaIndex ReActAgent                  │
+│           (Claude Sonnet via Bedrock)            │
+└────────┬────────────────────────┬───────────────┘
+         │                        │
+         ▼                        ▼
+┌────────────────┐      ┌──────────────────────┐
+│ catalog_search │      │ unstructured_search   │
+│                │      │                       │
+│ Structured     │      │ PDF / Document RAG    │
+│ metadata from  │      │ Shareholder letters,  │
+│ Unity Catalog  │      │ reports, policies     │
+│ (34 tables)    │      │                       │
+└───────┬────────┘      └──────────┬────────────┘
+        │                          │
+        ▼                          │
+┌────────────────┐                 │
+│ get_column_    │                 │
+│ samples        │                 │
+│ (real values   │                 │
+│ for filters)   │                 │
+└───────┬────────┘                 │
+        │                          │
+        ▼                          │
+┌────────────────┐                 │
+│ run_sql        │                 │
+│ (Databricks    │                 │
+│ SQL Warehouse) │                 │
+└───────┬────────┘                 │
+        │                          │
+        └──────────┬───────────────┘
+                   ▼
+        ┌─────────────────────┐
+        │  Streamlit UI       │
+        │  + Plotly Charts    │
+        └─────────────────────┘
+```
+
+### Vector Store
+
+Both pipelines land in **Aurora PostgreSQL Serverless v2 with pgvector**, using hybrid retrieval:
+- **Dense** — Titan Embed v2 (1024-dim) vector similarity via HNSW index
+- **Keyword** — PostgreSQL full-text search via GIN index
+
+This matters because pure semantic search misses exact term matches — `ssn` should find the `ssn` column literally, not just semantically adjacent content.
+
+---
+
+## Two Ingestion Pipelines
+
+### 1. Structured — Unity Catalog Metadata
+Extracts table names, column names, types, business descriptions, and live sample values from all catalog tables. Each table becomes a rich text document that acts as the agent's schema map — refreshable on a schedule as the schema evolves.
+
+### 2. Unstructured — PDF / Document Pipeline
+PDFs uploaded to S3 are chunked using **Bedrock's native semantic chunking** (coherent passage splits, not fixed-size token windows), embedded with Titan Embed v2, and indexed in the same Aurora pgvector table alongside the catalog metadata.
 
 ---
 
@@ -25,116 +87,135 @@ AWS Bedrock · LlamaIndex ReActAgent · Aurora pgvector · Databricks jay-exer �
 
 ```
 jay-exer-bedrock-nlp/
-├── config.py                      # central config — reads .env
-├── .env                           # your credentials (never commit this)
+├── config.py                      # Central config — reads .env
+├── .env.example                   # Template — copy to .env and fill in
 ├── requirements.txt
-├── setup_aurora.py                # one-time: create Aurora pgvector cluster
+├── setup_aurora.py                # One-time: create Aurora pgvector cluster
 ├── ingestion/
 │   ├── extract_catalog.py         # Unity Catalog metadata → S3
-│   ├── upload_unstructured.py     # local docs → S3
-│   ├── create_kb.py               # one-time: create Bedrock KB
-│   └── refresh_catalog.py         # scheduled re-sync
+│   ├── upload_unstructured.py     # Local docs → S3
+│   ├── create_kb.py               # One-time: create Bedrock Knowledge Base
+│   └── refresh_catalog.py         # Scheduled re-sync on schema changes
 ├── agent/
 │   ├── tools.py                   # catalog_search, unstructured_search, run_sql
 │   └── react_agent.py             # ReActAgent + Claude via Bedrock
 ├── eval/
 │   └── ragas_hooks.py             # Ragas faithfulness + relevancy scoring
 ├── ui/
-│   └── app.py                     # Streamlit UI + Plotly charts
-└── docs/                          # drop your PDFs/JSON/text files here
+│   └── app.py                     # Streamlit UI + Plotly auto-charts
+└── docs/                          # Drop PDFs here → upload_unstructured.py
 ```
 
 ---
 
-## Setup — PowerShell (Windows)
+## Setup
 
-### Step 1 — Create folder and venv
+### Prerequisites
+- AWS account with Bedrock model access (Claude Sonnet, Titan Embed v2)
+- AWS CLI v2.15+ installed and configured
+- Python 3.11+
+- Databricks workspace with Unity Catalog
 
-```powershell
-mkdir C:\Users\nj_ra\.aws\jay-exer-bedrock-nlp
-cd C:\Users\nj_ra\.aws\jay-exer-bedrock-nlp
+### Step 1 — Clone and install
+
+```bash
+git clone https://github.com/njomaha/jay-exer-bedrock-nlp.git
+cd jay-exer-bedrock-nlp
 python -m venv venv
-.\venv\Scripts\Activate.ps1
-```
-
-If you get a permissions error:
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-### Step 2 — Install dependencies
-
-```powershell
+source venv/bin/activate        # Windows: .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### Step 3 — Edit .env
+### Step 2 — Configure
 
-```powershell
-notepad .env
+```bash
+cp .env.example .env
+# Edit .env with your actual values
 ```
 
-Fill in your Databricks HOST, HTTP_PATH, TOKEN.
-Leave KB_ID and Aurora ARNs blank for now — the setup scripts will fill them.
+### Step 3 — Create S3 bucket
 
-### Step 4 — Create S3 bucket
-
-```powershell
-aws s3 mb s3://jay-exer-catalog-rag --region us-east-1
+```bash
+aws s3 mb s3://your-bucket-name --region us-east-1
 ```
 
-### Step 5 — Create Aurora pgvector (one-time, ~5 min)
+### Step 4 — Create Aurora pgvector (one-time, ~5 min)
 
-```powershell
+```bash
 python setup_aurora.py
+# Copy the ARNs printed at the end into .env
 ```
 
-Copy the two ARNs printed at the end into your .env file.
+Then create the required table and indexes:
 
-### Step 6 — Create IAM role for Bedrock KB
+```bash
+# Run these three commands against your Aurora cluster via AWS CLI or console
+# 1. Enable pgvector
+CREATE EXTENSION IF NOT EXISTS vector;
 
-```powershell
-aws iam create-role --role-name BedrockKBRole --assume-role-policy-document '{
-  "Version":"2012-10-17",
-  "Statement":[{
-    "Effect":"Allow",
-    "Principal":{"Service":"bedrock.amazonaws.com"},
-    "Action":"sts:AssumeRole"
-  }]
-}'
+# 2. Create table (1024 dims = Titan Embed v2)
+CREATE TABLE bedrock_kb (
+    id        uuid PRIMARY KEY,
+    embedding vector(1024),
+    text      text,
+    metadata  json
+);
+
+# 3. GIN index for keyword search (required by Bedrock KB)
+CREATE INDEX bedrock_kb_text_idx
+    ON bedrock_kb USING gin (to_tsvector('simple', text));
+
+# 4. HNSW index for vector search (required by Bedrock KB)
+CREATE INDEX bedrock_kb_embedding_idx
+    ON bedrock_kb USING hnsw (embedding vector_cosine_ops);
+```
+
+### Step 5 — Create IAM role for Bedrock KB
+
+```bash
+# Create trust policy file
+echo '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"bedrock.amazonaws.com"},"Action":"sts:AssumeRole"}]}' > trust.json
+
+aws iam create-role --role-name BedrockKBRole --assume-role-policy-document file://trust.json
 aws iam attach-role-policy --role-name BedrockKBRole --policy-arn arn:aws:iam::aws:policy/AmazonBedrockFullAccess
 aws iam attach-role-policy --role-name BedrockKBRole --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
-aws iam attach-role-policy --role-name BedrockKBRole --policy-arn arn:aws:iam::aws:policy/AmazonRDSDataFullAccess
+aws iam attach-role-policy --role-name BedrockKBRole --policy-arn arn:aws:iam::aws:policy/AmazonRDSFullAccess
+aws iam attach-role-policy --role-name BedrockKBRole --policy-arn arn:aws:iam::aws:policy/SecretsManagerReadWrite
 ```
 
-### Step 7 — Upload catalog metadata to S3
+### Step 6 — Ingest data
 
-```powershell
+```bash
+# Extract Unity Catalog metadata → S3
 python ingestion/extract_catalog.py
-```
 
-### Step 8 — Upload your unstructured docs
-
-Drop PDFs, JSON, txt files into the `docs/` folder then:
-```powershell
+# Upload PDFs from docs/ folder → S3
 python ingestion/upload_unstructured.py
-```
 
-### Step 9 — Create Bedrock Knowledge Base (one-time)
-
-```powershell
+# Create Bedrock Knowledge Base (one-time)
 python ingestion/create_kb.py
+# Copy KB_ID and DS IDs printed at the end into .env
 ```
 
-Copy the KB_ID and DS IDs into your .env file.
+### Step 7 — Trigger ingestion jobs
 
-### Step 10 — Run the UI
+```bash
+aws bedrock-agent start-ingestion-job \
+  --knowledge-base-id YOUR_KB_ID \
+  --data-source-id YOUR_CATALOG_DS_ID
 
-```powershell
+aws bedrock-agent start-ingestion-job \
+  --knowledge-base-id YOUR_KB_ID \
+  --data-source-id YOUR_UNSTRUCTURED_DS_ID
+```
+
+### Step 8 — Launch the UI
+
+```bash
 streamlit run ui/app.py
 ```
 
-Opens at http://localhost:8501
+Opens at `http://localhost:8501`
 
 ---
 
@@ -143,9 +224,21 @@ Opens at http://localhost:8501
 | Task | Command |
 |---|---|
 | Refresh catalog after schema changes | `python ingestion/refresh_catalog.py` |
-| Add new docs | Drop into `docs/` → `python ingestion/upload_unstructured.py` |
+| Add new PDF docs | Drop into `docs/` → `python ingestion/upload_unstructured.py` |
 | Run eval regression | `python eval/ragas_hooks.py` |
 | Start UI | `streamlit run ui/app.py` |
+
+---
+
+## Example Questions
+
+| Question | Path |
+|---|---|
+| "What tables contain customer data?" | catalog_search |
+| "What is average balance by region?" | catalog_search → run_sql → chart |
+| "Which territory had highest revenue last quarter?" | unstructured_search → PDF |
+| "Summarize the Q3 shareholder letter" | unstructured_search → PDF |
+| "List all gold layer tables" | catalog_search |
 
 ---
 
@@ -159,10 +252,27 @@ Opens at http://localhost:8501
 | S3 storage | ~$5 |
 | **Total** | **~$80/month** |
 
-Significantly cheaper than Databricks Vector Search endpoint (~$200-400/month idle).
+Significantly cheaper than always-on managed vector search endpoints (~$200–400/month idle).
 
 ---
 
-## LinkedIn Project Description
+## Stack
 
-> **AWS Bedrock NLP-to-SQL Intelligence Platform** — Production-grade natural language data interface built on AWS Bedrock, LlamaIndex ReActAgent, Aurora pgvector (serverless), Titan Embed v2, and Claude Sonnet. Supports structured SQL queries against Databricks Unity Catalog and unstructured S3 document search (PDFs, reports, JSON) via hybrid RAG (dense + BM25). Streamlit UI with auto-rendered Plotly charts. Ragas eval hooks for faithfulness and context precision scoring. GitHub: `njomaha/jay-exer-bedrock-nlp`
+| Layer | Technology |
+|---|---|
+| LLM | Claude Sonnet via AWS Bedrock |
+| Embeddings | Amazon Titan Embed v2 (1024-dim) |
+| Vector store | Aurora PostgreSQL Serverless v2 + pgvector |
+| Retrieval | Hybrid: HNSW dense + GIN keyword |
+| Agent | LlamaIndex ReActAgent |
+| Chunking | Bedrock native semantic chunking |
+| Structured data | Unity Catalog lakehouse |
+| UI | Streamlit + Plotly |
+| Eval | Ragas (faithfulness, relevancy, context precision) |
+
+---
+
+## Author
+
+**Jayaraman Iyer Narayanan** — Principal Data & AI Architect
+[LinkedIn](https://linkedin.com/in/jayaraman-iyernarayanan-34514920) · [GitHub](https://github.com/njomaha)
